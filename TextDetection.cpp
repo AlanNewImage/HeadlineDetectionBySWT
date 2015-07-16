@@ -42,6 +42,9 @@
 #include <algorithm>
 #include <vector>
 #include <TextDetection.h>
+#include <queue>
+
+using namespace std;
 
 #define PI 3.14159265
 
@@ -205,6 +208,18 @@ void renderComponentsWithBoxes (IplImage * SWTImage, std::vector<std::vector<Poi
     }
 }
 
+void renderComponentsWithBoxes(IplImage *SWTImage, vector<Component> &components, IplImage* output)
+{
+	vector<vector<Point2d> > compPoints;
+	vector<pair<Point2d, Point2d> > compBB;
+	for (int i = 0; i < components.size(); i++)
+	{
+		compPoints.push_back(components[i].componentPoints);
+		compBB.push_back(components[i].compBB);
+	}
+	renderComponentsWithBoxes (SWTImage, compPoints, compBB, output);
+}
+
 void renderChainsWithBoxes (IplImage * SWTImage,
                    std::vector<std::vector<Point2d> > & components,
                    std::vector<Chain> & chains,
@@ -253,6 +268,18 @@ void renderChainsWithBoxes (IplImage * SWTImage,
     }
 }
 
+void renderChainsWithBoxes(IplImage *SWTImage, vector<Component> &components, vector<Chain> &chains, IplImage *output)
+{
+	std::vector<std::vector<Point2d> > componentPoints;
+	vector<pair<Point2d, Point2d> > compBB;
+	for (int i = 0; i < components.size(); i++)
+	{
+		componentPoints.push_back(components[i].componentPoints);
+		compBB.push_back(components[i].compBB);
+	}
+	renderChainsWithBoxes(SWTImage, componentPoints, chains, compBB, output);
+}
+
 void renderChains (IplImage * SWTImage,
                    std::vector<std::vector<Point2d> > & components,
                    std::vector<Chain> & chains,
@@ -282,8 +309,81 @@ void renderChains (IplImage * SWTImage,
 	cvReleaseImage(&outTemp);
 }
 
+void renderChains (IplImage * SWTImage,
+				   std::vector<Component> &components,
+                   std::vector<Chain> & chains,
+                   IplImage * output)
+{
+	std::vector<std::vector<Point2d> > componentPoints;
+	for (int i = 0; i < components.size(); i++)
+	{
+		componentPoints.push_back(components[i].componentPoints);
+	}
+	renderChains(SWTImage, componentPoints, chains, output);
+}
+
+float computeChainsTotalSWT(IplImage* SWTImage, vector<Point2d> &points)
+{
+	float totalSWT = 0;
+	for (int i = 0; i < points.size(); i++)
+	{
+		totalSWT += CV_IMAGE_ELEM(SWTImage, float, points[i].y, points[i].x);
+	}
+	return totalSWT;
+}
+
+float computeChainsTotalArea(vector<Point2d> &points, cv::RotatedRect &rRect)
+{
+	vector<cv::Point> pointsForOpenCV(points.size());
+	for (int i = 0; i < points.size(); i++)
+	{
+		pointsForOpenCV[i] = cv::Point(points[i].x, points[i].y);
+	}
+	rRect = cv::minAreaRect(pointsForOpenCV);
+	int width = rRect.size.height;
+	int length = rRect.size.width;
+	return width*length;
+}
+
+
+cv::RotatedRect findHeadlineLocation(IplImage* SWTImage, 
+							 std::vector<Component> &components, 
+							 std::vector<Chain> &chains)
+{
+	int maxScore = 0;
+	cv::RotatedRect headLocation;
+	for (std::vector<Chain>::iterator it = chains.begin(); it != chains.end();it++) {
+		vector<Point2d> points;
+        for (std::vector<int>::iterator cit = it->components.begin(); cit != it->components.end(); cit++) {
+			points.insert(points.end(), components[*cit].componentPoints.begin(), components[*cit].componentPoints.end());
+        }
+		float SWTScore = computeChainsTotalSWT(SWTImage, points);
+		cv::RotatedRect tmpLoc;
+		float AreaScore = computeChainsTotalArea(points, tmpLoc);
+		if (SWTScore+AreaScore > maxScore)
+		{
+			maxScore = SWTScore + AreaScore;
+			headLocation = tmpLoc;
+		}
+    }
+	return headLocation;
+}
+
+void drawRotatedRect(cv::Mat img, cv::RotatedRect &rRect, cv::Scalar color, int thickness)
+{
+	assert((rRect.size.height != 0) &&(rRect.size.width != 0));
+
+	cv::Point2f vertices[4];
+	rRect.points(vertices);
+	for (int i = 0; i < 4; i++)
+	{
+		line(img, vertices[i], vertices[(i+1)%4], color, thickness);
+	}
+}
+
 IplImage * textDetection (IplImage * input, bool dark_on_light)
 {
+	double start, end, during;
     assert ( input->depth == IPL_DEPTH_8U );
     assert ( input->nChannels == 3 );
     std::cout << "Running textDetection with dark_on_light " << dark_on_light << std::endl;
@@ -292,8 +392,10 @@ IplImage * textDetection (IplImage * input, bool dark_on_light)
             cvCreateImage ( cvGetSize ( input ), IPL_DEPTH_8U, 1 );
     cvCvtColor ( input, grayImage, CV_RGB2GRAY );
     // Create Canny Image
-    double threshold_low = 175;
-    double threshold_high = 320;
+    double threshold_low = 100;
+    double threshold_high = 200;
+    //double threshold_low = 175;
+    //double threshold_high = 320;
     IplImage * edgeImage =
             cvCreateImage( cvGetSize (input),IPL_DEPTH_8U, 1 );
     cvCanny(grayImage, edgeImage, threshold_low, threshold_high, 3) ;
@@ -341,44 +443,68 @@ IplImage * textDetection (IplImage * input, bool dark_on_light)
     // Calculate legally connect components from SWT and gradient image.
     // return type is a vector of vectors, where each outer vector is a component and
     // the inner vector contains the (y,x) of each pixel in that component.
-    std::vector<std::vector<Point2d> > components = findLegallyConnectedComponents(SWTImage, rays);
+    std::vector<std::vector<Point2d> > componentPoints;
+/*
+	start = (double)cv::getTickCount();
+	findLegallyConnectedComponents(SWTImage, rays, components);
+	during = ((double)cv::getTickCount()-start)/cv::getTickFrequency();
+	std::cout << "Find component during is " << during << std::endl;
+*/
+	cv::Mat SWTImageMat(SWTImage);
+	start = (double)cv::getTickCount();
+	findLegallyCC(SWTImageMat, componentPoints);
+	during = ((double)cv::getTickCount()-start)/cv::getTickFrequency();
+	std::cout << "Our Find component during is " << during << std::endl;
 
     // Filter the components
-    std::vector<std::vector<Point2d> > validComponents;
-    std::vector<std::pair<Point2d,Point2d> > compBB;
-    std::vector<Point2dFloat> compCenters;
-    std::vector<float> compMedians;
-    std::vector<Point2d> compDimensions;
-    filterComponents(SWTImage, components, validComponents, compCenters, compMedians, compDimensions, compBB );
-
+   
+	start = (double)cv::getTickCount();
+    vector<Component> components = filterComponents(SWTImage, componentPoints);
+	computeAverageComponentColor(input, components); 
+	during = ((double)cv::getTickCount()-start)/cv::getTickFrequency();
+	std::cout << "Filter components during is " << during << std::endl;
     IplImage * output3 =
             cvCreateImage ( cvGetSize ( input ), 8U, 3 );
-    renderComponentsWithBoxes (SWTImage, validComponents, compBB, output3);
+	renderComponentsWithBoxes(SWTImage, components, output3);
     cvSaveImage ( "components.png",output3);
-    //cvReleaseImage ( &output3 );
+
+	// Cluster Chinese Word
+	clusterChineseWord(input, components);
+    IplImage * output4 =
+            cvCreateImage ( cvGetSize ( input ), 8U, 3 );
+	
+	renderComponentsWithBoxes (SWTImage, components, output4);
+    cvSaveImage ( "words.png",output4);
+    cvReleaseImage ( &output3 );
 
     // Make chains of components
     std::vector<Chain> chains;
-    chains = makeChains(input, validComponents, compCenters, compMedians, compDimensions, compBB);
-
-    IplImage * output4 =
-            cvCreateImage ( cvGetSize ( input ), IPL_DEPTH_8U, 1 );
-    renderChains ( SWTImage, validComponents, chains, output4 );
-    //cvSaveImage ( "text.png", output4);
+	chains = makeChains(components);
 
     IplImage * output5 =
-            cvCreateImage ( cvGetSize ( input ), IPL_DEPTH_8U, 3 );
-    cvCvtColor (output4, output5, CV_GRAY2RGB);
-    cvReleaseImage ( &output4 );
+            cvCreateImage ( cvGetSize ( input ), IPL_DEPTH_8U, 1 );
+	renderChains ( SWTImage, components, chains, output5 );
+    //cvSaveImage ( "text.png", output4);
 
-    /*IplImage * output =
+    IplImage * output6 =
             cvCreateImage ( cvGetSize ( input ), IPL_DEPTH_8U, 3 );
-    renderChainsWithBoxes ( SWTImage, validComponents, chains, compBB, output); */
+    cvCvtColor (output5, output6, CV_GRAY2RGB);
+    //cvReleaseImage ( &output4 );
+
+    IplImage * output7 =
+            cvCreateImage ( cvGetSize ( input ), IPL_DEPTH_8U, 3 );
+	renderChainsWithBoxes ( SWTImage, components, chains, output7);
+    cvSaveImage ( "chainWithBox.png",output7);
+
+	cv::RotatedRect headLoc = findHeadlineLocation(SWTImage, components, chains);
+	cv::Mat output8(input);
+	drawRotatedRect(output8, headLoc, cv::Scalar(0,255,0), 4);
+
     cvReleaseImage ( &gradientX );
     cvReleaseImage ( &gradientY );
     cvReleaseImage ( &SWTImage );
     cvReleaseImage ( &edgeImage );
-    return output5;
+    return output6;
 }
 
 void strokeWidthTransform (IplImage * edgeImage,
@@ -448,6 +574,7 @@ void strokeWidthTransform (IplImage * edgeImage,
 
                             }
 
+							// 如果p和q的夹角小于90度
                             if (acos(G_x * -G_xt + G_y * -G_yt) < PI/2.0 ) {
                                 float length = sqrt( ((float)r.q.x - (float)r.p.x)*((float)r.q.x - (float)r.p.x) + ((float)r.q.y - (float)r.p.y)*((float)r.q.y - (float)r.p.y));
                                 for (std::vector<Point2d>::iterator pit = points.begin(); pit != points.end(); pit++) {
@@ -490,9 +617,87 @@ bool Point2dSort (const Point2d &lhs, const Point2d &rhs) {
     return lhs.SWT < rhs.SWT;
 }
 
-std::vector< std::vector<Point2d> >
-findLegallyConnectedComponents (IplImage * SWTImage,
-                                std::vector<Ray> & rays)
+void findLegallyCC(cv::Mat SWTImage, 
+				   std::vector<std::vector<Point2d> > &components)
+{
+	cv::Mat labelMap(SWTImage.size(), CV_32FC1, cv::Scalar(0));
+	cv::Point eightNeibor[8]	= {cv::Point(1, -1), 
+		cv::Point(1, 0),
+		cv::Point(1, 1),
+		cv::Point(0, 1),
+		cv::Point(-1, 1),
+		cv::Point(-1, 0),
+		cv::Point(-1, -1),
+		cv::Point(0, -1)
+	};
+	queue<cv::Point> pointQueue;
+	
+	int label=0;
+
+	for (int i = 0; i < SWTImage.rows; i++)
+	{
+		for (int j = 0; j < SWTImage.cols; j++)
+		{
+			if (SWTImage.at<float>(i, j) > 0 && labelMap.at<float>(i, j) == 0)
+			{
+				pointQueue.push(cv::Point(j, i));	
+				label++;
+				labelMap.at<float>(i, j) = label;
+				components.push_back(vector<Point2d>());
+				while (pointQueue.empty() == false)
+				{
+					cv::Point curPoint = pointQueue.front();	
+					float curPointSW = SWTImage.at<float>(curPoint.y, curPoint.x);
+					Point2d tmpPoint;
+					tmpPoint.x = curPoint.x;
+					tmpPoint.y = curPoint.y;
+					tmpPoint.SWT= curPointSW;
+					components[label-1].push_back(tmpPoint);
+
+					for (int k = 0; k < 8; k++)
+					{
+						cv::Point neibor = curPoint + eightNeibor[k];
+						if (neibor.x>=0 && neibor.x < SWTImage.cols 
+							&& neibor.y>=0 && neibor.y<SWTImage.rows )
+						{
+							float neiborSWT = SWTImage.at<float>(neibor.y, neibor.x);
+							if (labelMap.at<float>(neibor.y, neibor.x)==0
+								&& neiborSWT > 0 
+								&& (neiborSWT/curPointSW <3.0 && curPointSW/neiborSWT <3.0))
+							{
+								pointQueue.push(neibor);	
+								labelMap.at<float>(neibor.y, neibor.x) = label;
+							}
+						}
+					}	
+					pointQueue.pop();	
+				}
+			}	
+		}
+	}
+	int num_comp = components.size();
+	int num_vertices=0;
+	int num_filterd = 0;
+	for (auto vecIt = components.begin(); vecIt != components.end(); )
+	{
+		num_vertices+=vecIt->size();
+
+		if (vecIt->size() < 10)
+		{
+			vecIt = components.erase(vecIt);
+		}
+		else{
+			vecIt++;
+			num_filterd += vecIt->size();
+		}
+	}
+	std::cout << "Our implementation Before filtering, " << num_comp << " components and " << num_vertices << " vertices" << std::endl;
+	std::cout << "Filterd by points: " << num_filterd << "componnets is " << components.size() << endl;
+}
+
+void findLegallyConnectedComponents (IplImage * SWTImage,
+                                std::vector<Ray> & rays,
+								std::vector<std::vector<Point2d> > &components)
 {
         boost::unordered_map<int, int> map;
         boost::unordered_map<int, Point2d> revmap;
@@ -547,12 +752,11 @@ findLegallyConnectedComponents (IplImage * SWTImage,
                 ptr++;
             }
         }
-
         std::vector<int> c(num_vertices);
 
         int num_comp = connected_components(g, &c[0]);
 
-        std::vector<std::vector<Point2d> > components;
+        //std::vector<std::vector<Point2d> > components;
         components.reserve(num_comp);
         std::cout << "Before filtering, " << num_comp << " components and " << num_vertices << " vertices" << std::endl;
         for (int j = 0; j < num_comp; j++) {
@@ -563,8 +767,6 @@ findLegallyConnectedComponents (IplImage * SWTImage,
             Point2d p = revmap[j];
             (components[c[j]]).push_back(p);
         }
-
-        return components;
 }
 
 std::vector< std::vector<Point2d> >
@@ -664,13 +866,12 @@ void componentStats(IplImage * SWTImage,
         median = temp[temp.size()/2];
 }
 
-
 void filterComponents(IplImage * SWTImage,
                       std::vector<std::vector<Point2d> > & components,
                       std::vector<std::vector<Point2d> > & validComponents,
                       std::vector<Point2dFloat> & compCenters,
                       std::vector<float> & compMedians,
-                      std::vector<Point2d> & compDimensions,
+                      std::vector<Point2dFloat> & compDimensions,
                       std::vector<std::pair<Point2d,Point2d> > & compBB )
 {
         validComponents.reserve(components.size());
@@ -686,24 +887,33 @@ void filterComponents(IplImage * SWTImage,
             componentStats(SWTImage, (*it), mean, variance, median, minx, miny, maxx, maxy);
 
             // check if variance is less than half the mean
-            if (variance > 0.5 * mean) {
+            if (variance > 1 * mean) {
                  continue;
             }
 
             float length = (float)(maxx-minx+1);
             float width = (float)(maxy-miny+1);
-
             // check font height
-            if (width > 300) {
+            if (width > 300 || width < 10) {
                 continue;
             }
-
             float area = length * width;
             float rminx = (float)minx;
             float rmaxx = (float)maxx;
             float rminy = (float)miny;
             float rmaxy = (float)maxy;
             // compute the rotated bounding box
+			// 为什么不用OpenCV中的rect函数
+
+			std::vector<cv::Point> points(it->size());
+			for (int i = 0; i < it->size(); i++)
+			{
+				points[i] = cv::Point((*it)[i].x, (*it)[i].y);	
+			}
+			cv::RotatedRect bb = cv::minAreaRect(points);
+			width = bb.size.height;
+			length = bb.size.width;
+/*
             float increment = 1./36.;
             for (float theta = increment * PI; theta<PI/2.0; theta += increment * PI) {
                 float xmin,xmax,ymin,ymax,xtemp,ytemp,ltemp,wtemp;
@@ -727,11 +937,13 @@ void filterComponents(IplImage * SWTImage,
                     width = wtemp;
                 }
             }
-            // check if the aspect ratio is between 1/10 and 10
-            if (length/width < 1./10. || length/width > 10.) {
+			*/
+            // check if the aspect ratio is between 1/5 and 5 
+            if (length/width < 1./5. || length/width > 5.) {
                 continue;
             }
 
+			/*
             // compute the diameter TODO finish
             // compute dense representation of component
             std::vector <std::vector<float> > denseRepr;
@@ -740,7 +952,7 @@ void filterComponents(IplImage * SWTImage,
                 std::vector<float> tmp;
                 tmp.reserve(maxy-miny+1);
                 denseRepr.push_back(tmp);
-                for (int j = 0; j < maxy-miny+1; j++) {\
+                for (int j = 0; j < maxy-miny+1; j++) {
                     denseRepr[i].push_back(0);
                 }
             }
@@ -749,6 +961,7 @@ void filterComponents(IplImage * SWTImage,
             }
             // create graph representing components
             const int num_nodes = it->size();
+			*/
             /*
             E edges[] = { E(0,2),
                           E(1,1), E(1,3), E(1,4),
@@ -762,7 +975,7 @@ void filterComponents(IplImage * SWTImage,
             center.x = ((float)(maxx+minx))/2.0;
             center.y = ((float)(maxy+miny))/2.0;
 
-            Point2d dimensions;
+            Point2dFloat dimensions;
             dimensions.x = maxx - minx + 1;
             dimensions.y = maxy - miny + 1;
 
@@ -780,9 +993,9 @@ void filterComponents(IplImage * SWTImage,
             compMedians.push_back(median);
             compCenters.push_back(center);
             validComponents.push_back(*it);
-        }
+		}
        std::vector<std::vector<Point2d > > tempComp;
-       std::vector<Point2d > tempDim;
+       std::vector<Point2dFloat > tempDim;
        std::vector<float > tempMed;
        std::vector<Point2dFloat > tempCenters;
        std::vector<std::pair<Point2d,Point2d> > tempBB;
@@ -820,8 +1033,26 @@ void filterComponents(IplImage * SWTImage,
         compCenters.reserve(tempComp.size());
         validComponents.reserve(tempComp.size());
         compBB.reserve(tempComp.size());
-
         std::cout << "After filtering " << validComponents.size() << " components" << std::endl;
+}
+
+vector<Component> filterComponents(IplImage *SWTImage, 
+	std::vector<std::vector<Point2d> > & componentsPoints)
+{
+	std::vector<std::vector<Point2d>> validComPoints;
+    std::vector<std::pair<Point2d,Point2d> > compBB;
+    std::vector<Point2dFloat> compCenters;
+    std::vector<float> compMedians;
+    std::vector<Point2dFloat> compDimensions;
+
+    filterComponents(SWTImage, componentsPoints, validComPoints, compCenters, compMedians, compDimensions, compBB );
+	vector<Component> validComponents(validComPoints.size());
+	for (int i = 0; i < validComPoints.size(); i++)
+	{
+		Component com(validComPoints[i], validComponents.size(), compCenters[i], compMedians[i], compDimensions[i], compBB[i]);
+		validComponents[i] = com;
+	}
+	return validComponents;
 }
 
 bool sharesOneEnd( Chain c0, Chain c1) {
@@ -841,23 +1072,17 @@ bool chainSortLength (const Chain &lhs, const Chain &rhs) {
     return lhs.components.size() > rhs.components.size();
 }
 
-std::vector<Chain> makeChains( IplImage * colorImage,
-                 std::vector<std::vector<Point2d> > & components,
-                 std::vector<Point2dFloat> & compCenters,
-                 std::vector<float> & compMedians,
-                 std::vector<Point2d> & compDimensions,
-                 std::vector<std::pair<Point2d,Point2d> > & compBB) {
-    assert (compCenters.size() == components.size());
-    // make vector of color averages
-    std::vector<Point3dFloat> colorAverages;
-    colorAverages.reserve(components.size());
-    for (std::vector<std::vector<Point2d> >::iterator it = components.begin(); it != components.end();it++) {
+
+void computeAverageComponentColor(IplImage *colorImage, 
+								  vector<Component> &components)
+{
+    for (std::vector<Component>::iterator it = components.begin(); it != components.end();it++) {
         Point3dFloat mean;
         mean.x = 0;
         mean.y = 0;
         mean.z = 0;
         int num_points = 0;
-        for (std::vector<Point2d>::iterator pit = it->begin(); pit != it->end(); pit++) {
+		for (std::vector<Point2d>::iterator pit = (it->componentPoints).begin(); pit != (it->componentPoints).end(); pit++) {
             mean.x += (float) CV_IMAGE_ELEM (colorImage, unsigned char, pit->y, (pit->x)*3 );
             mean.y += (float) CV_IMAGE_ELEM (colorImage, unsigned char, pit->y, (pit->x)*3+1 );
             mean.z += (float) CV_IMAGE_ELEM (colorImage, unsigned char, pit->y, (pit->x)*3+2 );
@@ -866,62 +1091,180 @@ std::vector<Chain> makeChains( IplImage * colorImage,
         mean.x = mean.x / ((float)num_points);
         mean.y = mean.y / ((float)num_points);
         mean.z = mean.z / ((float)num_points);
-        colorAverages.push_back(mean);
+		it->color = mean;
     }
+}
 
-    // form all eligible pairs and calculate the direction of each
-    std::vector<Chain> chains;
+vector<Chain> computeSortedChainCandidate(vector<Component> &components)
+{
+	vector<Chain> chains;
     for ( unsigned int i = 0; i < components.size(); i++ ) {
         for ( unsigned int j = i + 1; j < components.size(); j++ ) {
-            // TODO add color metric
-            if ( (compMedians[i]/compMedians[j] <= 2.0 || compMedians[j]/compMedians[i] <= 2.0) &&
-                 (compDimensions[i].y/compDimensions[j].y <= 2.0 || compDimensions[j].y/compDimensions[i].y <= 2.0)) {
-                float dist = (compCenters[i].x - compCenters[j].x) * (compCenters[i].x - compCenters[j].x) +
-                             (compCenters[i].y - compCenters[j].y) * (compCenters[i].y - compCenters[j].y);
-                float colorDist = (colorAverages[i].x - colorAverages[j].x) * (colorAverages[i].x - colorAverages[j].x) +
-                                  (colorAverages[i].y - colorAverages[j].y) * (colorAverages[i].y - colorAverages[j].y) +
-                                  (colorAverages[i].z - colorAverages[j].z) * (colorAverages[i].z - colorAverages[j].z);
-                if (dist < 9*(float)(std::max(std::min(compDimensions[i].x,compDimensions[i].y),std::min(compDimensions[j].x,compDimensions[j].y)))
-                    *(float)(std::max(std::min(compDimensions[i].x,compDimensions[i].y),std::min(compDimensions[j].x,compDimensions[j].y)))
-                    && colorDist < 1600) {
-                    Chain c;
-                    c.p = i;
-                    c.q = j;
-                    std::vector<int> comps;
-                    comps.push_back(c.p);
-                    comps.push_back(c.q);
-                    c.components = comps;
-                    c.dist = dist;
-                    float d_x = (compCenters[i].x - compCenters[j].x);
-                    float d_y = (compCenters[i].y - compCenters[j].y);
-                    /*
-                    float d_x = (compBB[i].first.x - compBB[j].second.x);
-                    float d_y = (compBB[i].second.y - compBB[j].second.y);
-                    */
-                    float mag = sqrt(d_x*d_x + d_y*d_y);
-                    d_x = d_x / mag;
-                    d_y = d_y / mag;
-                    Point2dFloat dir;
-                    dir.x = d_x;
-                    dir.y = d_y;
-                    c.direction = dir;
-                    chains.push_back(c);
-
-                    /*std::cerr << c.p << " " << c.q << std::endl;
-                    std::cerr << c.direction.x << " " << c.direction.y << std::endl;
-                    std::cerr << compCenters[c.p].x << " " << compCenters[c.p].y << std::endl;
-                    std::cerr << compCenters[c.q].x << " " << compCenters[c.q].y << std::endl;
-                    std::cerr << std::endl;
-                    std::cerr << colorDist << std::endl; */
+			// 笔画宽度的中值之比小于2
+			if ( (components[i].medianSWT/components[j].medianSWT <= 2.0 && 
+				components[j].medianSWT/components[i].medianSWT <= 2.0))
+			{
+				float dist = (components[i].center.x - components[j].center.x) * (components[i].center.x - components[j].center.x) +
+							 (components[i].center.y - components[j].center.y) * (components[i].center.y - components[j].center.y);
+				dist = sqrt(dist);
+				float colorDist = (components[i].color.x - components[j].color.x) * (components[i].color.x - components[j].color.x) +
+									(components[i].color.y - components[j].color.y) * (components[i].color.y - components[j].color.y) +
+									(components[i].color.z - components[j].color.z) * (components[i].color.z - components[j].color.z);
+				//float threshold = (std::min(components[i].demension.x,components[i].demension.y)+
+				//	std::min(components[j].demension.x,components[j].demension.y))/2;
+				float threshold = (components[i].demension.x+components[i].demension.y+
+					components[j].demension.x+components[j].demension.y)/4;
+				if (dist < threshold && colorDist < 1600) {
+						Chain c;
+						c.p = i;
+						c.q = j;
+						std::vector<int> comps;
+						comps.push_back(c.p);
+						comps.push_back(c.q);
+						c.components = comps;
+						c.dist = dist;
+						float d_x = (components[i].center.x - components[j].center.x);
+						float d_y = (components[i].center.y - components[j].center.y);
+						/*
+						float d_x = (compBB[i].first.x - compBB[j].second.x);
+						float d_y = (compBB[i].second.y - compBB[j].second.y);
+						*/
+						float mag = sqrt(d_x*d_x + d_y*d_y);
+						d_x = d_x / mag;
+						d_y = d_y / mag;
+						Point2dFloat dir;
+						dir.x = d_x;
+						dir.y = d_y;
+						c.direction = dir;
+						chains.push_back(c);
                 }
             }
         }
     }
+	std::stable_sort(chains.begin(), chains.end(), &chainSortDist);
+	return chains;
+}
+
+Component mergeTwoComponent(Component &a, Component &b)
+{
+	a.componentPoints.insert(a.componentPoints.end(), b.componentPoints.begin(), b.componentPoints.end());
+	a.medianSWT = (a.medianSWT*a.componentPointsNum +b.medianSWT*b.componentPointsNum)/(a.componentPointsNum+b.componentPointsNum);
+
+	int minx = 1000000;
+	int miny = 1000000;
+	int maxx = 0;
+	int maxy = 0;
+	for (std::vector<Point2d>::const_iterator it = a.componentPoints.begin(); it != a.componentPoints.end(); it++) {
+		miny = std::min(miny,it->y);
+		minx = std::min(minx,it->x);
+		maxy = std::max(maxy,it->y);
+		maxx = std::max(maxx,it->x);
+	}
+	a.demension.x =(float)(maxx - minx + 1);
+	a.demension.y =(float)(maxy - miny + 1);
+
+	a.center.x = ((float)(maxx+minx))/2.0;
+	a.center.y = ((float)(maxy+miny))/2.0;
+
+	Point2dFloat dimensions;
+	dimensions.x = maxx - minx + 1;
+	dimensions.y = maxy - miny + 1;
+
+	Point2d bb1;
+	bb1.x = minx;
+	bb1.y = miny;
+
+	Point2d bb2;
+	bb2.x = maxx;
+	bb2.y = maxy;
+
+	a.compBB.first.x = minx;
+	a.compBB.first.y = miny;
+	a.compBB.second.x = maxx;
+	a.compBB.second.y = maxy;
+	
+	a.color.x = (a.color.x*a.componentPointsNum +b.color.x*b.componentPointsNum)/(a.componentPointsNum+b.componentPointsNum);
+	a.color.y = (a.color.y*a.componentPointsNum +b.color.y*b.componentPointsNum)/(a.componentPointsNum+b.componentPointsNum);
+	a.color.z = (a.color.z*a.componentPointsNum +b.color.z*b.componentPointsNum)/(a.componentPointsNum+b.componentPointsNum);
+
+	a.componentPointsNum += b.componentPointsNum;
+
+	return a;
+}
+
+void clusterChineseWord( IplImage * colorImage, vector<Component> &components)
+{
+    // make vector of color averages
+	vector<Chain> candidateChains = computeSortedChainCandidate(components);
+
+	while (!candidateChains.empty())
+	{
+		Chain closestChain = candidateChains[0];
+		mergeTwoComponent(components[closestChain.p], components[closestChain.q]);
+		components.erase(components.begin()+closestChain.q);
+		candidateChains = computeSortedChainCandidate(components);
+	}
+
+	std::cout << components.size() << " Chinese word" << std::endl;
+    //std::sort(chains.begin(), chains.end(), &chainSortDist);
+}
+
+std::vector<Chain> makeChains(vector<Component> &components) {
+	vector<Chain> chains;
+	for ( unsigned int i = 0; i < components.size(); i++ ) {
+		for ( unsigned int j = i + 1; j < components.size(); j++ ) {
+			// 笔画宽度的中值之比小于2, 高度之比小于2
+			if ( (components[i].medianSWT/components[j].medianSWT <= 2.0 && 
+				components[j].medianSWT/components[i].medianSWT <= 2.0)
+				&& (components[i].demension.y/components[j].demension.y <= 2.0 && 
+				components[j].demension.y/components[i].demension.y <= 2.0)) 
+			{
+				float dist = (components[i].center.x - components[j].center.x) * (components[i].center.x - components[j].center.x) +
+					(components[i].center.y - components[j].center.y) * (components[i].center.y - components[j].center.y);
+				dist = sqrt(dist);
+				float colorDist = (components[i].color.x - components[j].color.x) * (components[i].color.x - components[j].color.x) +
+					(components[i].color.y - components[j].color.y) * (components[i].color.y - components[j].color.y) +
+					(components[i].color.z - components[j].color.z) * (components[i].color.z - components[j].color.z);
+
+				float threshold = (components[i].demension.x+components[i].demension.y+
+					components[j].demension.x+components[j].demension.y)/2;
+				//if (dist < 3*(float)(std::max(std::min(components[i].demension.x,components[i].demension.y),
+				//	std::min(components[j].demension.x,components[j].demension.y)))
+				//	&& colorDist < 1600) {
+				if (dist < threshold && colorDist < 1600)
+				{
+						Chain c;
+						c.p = i;
+						c.q = j;
+						std::vector<int> comps;
+						comps.push_back(c.p);
+						comps.push_back(c.q);
+						c.components = comps;
+						c.dist = dist;
+						float d_x = (components[i].center.x - components[j].center.x);
+						float d_y = (components[i].center.y - components[j].center.y);
+						/*
+						float d_x = (compBB[i].first.x - compBB[j].second.x);
+						float d_y = (compBB[i].second.y - compBB[j].second.y);
+						*/
+						float mag = sqrt(d_x*d_x + d_y*d_y);
+						d_x = d_x / mag;
+						d_y = d_y / mag;
+						Point2dFloat dir;
+						dir.x = d_x;
+						dir.y = d_y;
+						c.direction = dir;
+						chains.push_back(c);
+				}
+			}
+		}
+	}
+
     std::cout << chains.size() << " eligible pairs" << std::endl;
     std::sort(chains.begin(), chains.end(), &chainSortDist);
 
     std::cerr << std::endl;
-    const float strictness = PI/6.0;
+	const float strictness = PI/6.0;
     //merge chains
     int merges = 1;
     while (merges > 0) {
@@ -956,8 +1299,8 @@ std::vector<Chain> makeChains( IplImage * colorImage,
                                 for (std::vector<int>::iterator it = chains[j].components.begin(); it != chains[j].components.end(); it++) {
                                     chains[i].components.push_back(*it);
                                 }
-                                float d_x = (compCenters[chains[i].p].x - compCenters[chains[i].q].x);
-                                float d_y = (compCenters[chains[i].p].y - compCenters[chains[i].q].y);
+								float d_x = (components[chains[i].p].center.x - components[chains[i].q].center.x);
+								float d_y = (components[chains[i].p].center.y - components[chains[i].q].center.y);
                                 chains[i].dist = d_x * d_x + d_y * d_y;
 
                                 float mag = sqrt(d_x*d_x + d_y*d_y);
@@ -999,8 +1342,8 @@ std::vector<Chain> makeChains( IplImage * colorImage,
                                 for (std::vector<int>::iterator it = chains[j].components.begin(); it != chains[j].components.end(); it++) {
                                     chains[i].components.push_back(*it);
                                 }
-                                float d_x = (compCenters[chains[i].p].x - compCenters[chains[i].q].x);
-                                float d_y = (compCenters[chains[i].p].y - compCenters[chains[i].q].y);
+								float d_x = (components[chains[i].p].center.x - components[chains[i].q].center.x);
+								float d_y = (components[chains[i].p].center.y - components[chains[i].q].center.y);
                                 float mag = sqrt(d_x*d_x + d_y*d_y);
                                 chains[i].dist = d_x * d_x + d_y * d_y;
 
@@ -1040,8 +1383,8 @@ std::vector<Chain> makeChains( IplImage * colorImage,
                                 for (std::vector<int>::iterator it = chains[j].components.begin(); it != chains[j].components.end(); it++) {
                                     chains[i].components.push_back(*it);
                                 }
-                                float d_x = (compCenters[chains[i].p].x - compCenters[chains[i].q].x);
-                                float d_y = (compCenters[chains[i].p].y - compCenters[chains[i].q].y);
+								float d_x = (components[chains[i].p].center.x - components[chains[i].q].center.x);
+								float d_y = (components[chains[i].p].center.y - components[chains[i].q].center.y);
                                 float mag = sqrt(d_x*d_x + d_y*d_y);
                                 chains[i].dist = d_x * d_x + d_y * d_y;
 
@@ -1080,11 +1423,11 @@ std::vector<Chain> makeChains( IplImage * colorImage,
                                 for (std::vector<int>::iterator it = chains[j].components.begin(); it != chains[j].components.end(); it++) {
                                     chains[i].components.push_back(*it);
                                 }
-                                float d_x = (compCenters[chains[i].p].x - compCenters[chains[i].q].x);
-                                float d_y = (compCenters[chains[i].p].y - compCenters[chains[i].q].y);
+								float d_x = (components[chains[i].p].center.x - components[chains[i].q].center.x);
+								float d_y = (components[chains[i].p].center.y - components[chains[i].q].center.y);
+                                float mag = sqrt(d_x*d_x + d_y*d_y);
                                 chains[i].dist = d_x * d_x + d_y * d_y;
 
-                                float mag = sqrt(d_x*d_x + d_y*d_y);
                                 d_x = d_x / mag;
                                 d_y = d_y / mag;
                                 Point2dFloat dir;
