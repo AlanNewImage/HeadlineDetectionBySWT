@@ -3,6 +3,7 @@
 
 paper/
 data/
+*.png
 
 # User-specific files
 *.suo

@@ -70,7 +70,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>D:\Program Files\OpenCV2.4.9\opencv\build\include;D:\Program Files\OpenCV2.4.9\opencv\build\include\opencv;E:\code\DetectText;E:\code\软件备份\boost;D:\Program Files\OpenCV2.4.9\opencv\build\include\opencv2</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>D:\Program Files\OpenCV2.4.9\opencv\build\include;D:\Program Files\OpenCV2.4.9\opencv\build\include\opencv;E:\code\DetectText;D:\Program Files\OpenCV2.4.9\opencv\build\include\opencv2</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
     </ClCompile>
     <Link>

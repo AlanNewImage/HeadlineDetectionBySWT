@@ -104,8 +104,6 @@ std::vector< std::vector<Point2d> >
 findLegallyConnectedComponentsRAY (IplImage * SWTImage,
                                 std::vector<Ray> & rays);
 
-
-
 void componentStats(IplImage * SWTImage,
                                         const std::vector<Point2d> & component,
                                         float & mean, float & variance, float & median,

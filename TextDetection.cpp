@@ -16,20 +16,7 @@
     You should have received a copy of the GNU General Public License
     along with DetectText.  If not, see <http://www.gnu.org/licenses/>.
 */
-#include <boost/graph/adjacency_list.hpp>
-#include <boost/graph/graph_traits.hpp>
-#include <boost/graph/connected_components.hpp>
-#include <boost/unordered_map.hpp>
-#include <boost/graph/floyd_warshall_shortest.hpp>
-#include <boost/numeric/ublas/matrix.hpp>
-#include <boost/numeric/ublas/io.hpp>
-/*#include <graph/adjacency_list.hpp>
-#include <graph/graph_traits.hpp>
-#include <graph/connected_components.hpp>
-#include <unordered_map.hpp>
-#include <graph/floyd_warshall_shortest.hpp>
-#include <numeric/ublas/matrix.hpp>
-#include <numeric/ublas/io.hpp> */
+
 #include <cassert>
 #include <cmath>
 #include <iostream>
@@ -383,7 +370,6 @@ void drawRotatedRect(cv::Mat img, cv::RotatedRect &rRect, cv::Scalar color, int 
 
 IplImage * textDetection (IplImage * input, bool dark_on_light)
 {
-	double start, end, during;
     assert ( input->depth == IPL_DEPTH_8U );
     assert ( input->nChannels == 3 );
     std::cout << "Running textDetection with dark_on_light " << dark_on_light << std::endl;
@@ -394,8 +380,7 @@ IplImage * textDetection (IplImage * input, bool dark_on_light)
     // Create Canny Image
     double threshold_low = 100;
     double threshold_high = 200;
-    //double threshold_low = 175;
-    //double threshold_high = 320;
+
     IplImage * edgeImage =
             cvCreateImage( cvGetSize (input),IPL_DEPTH_8U, 1 );
     cvCanny(grayImage, edgeImage, threshold_low, threshold_high, 3) ;
@@ -444,25 +429,14 @@ IplImage * textDetection (IplImage * input, bool dark_on_light)
     // return type is a vector of vectors, where each outer vector is a component and
     // the inner vector contains the (y,x) of each pixel in that component.
     std::vector<std::vector<Point2d> > componentPoints;
-/*
-	start = (double)cv::getTickCount();
-	findLegallyConnectedComponents(SWTImage, rays, components);
-	during = ((double)cv::getTickCount()-start)/cv::getTickFrequency();
-	std::cout << "Find component during is " << during << std::endl;
-*/
+
 	cv::Mat SWTImageMat(SWTImage);
-	start = (double)cv::getTickCount();
 	findLegallyCC(SWTImageMat, componentPoints);
-	during = ((double)cv::getTickCount()-start)/cv::getTickFrequency();
-	std::cout << "Our Find component during is " << during << std::endl;
 
     // Filter the components
    
-	start = (double)cv::getTickCount();
     vector<Component> components = filterComponents(SWTImage, componentPoints);
 	computeAverageComponentColor(input, components); 
-	during = ((double)cv::getTickCount()-start)/cv::getTickFrequency();
-	std::cout << "Filter components during is " << during << std::endl;
     IplImage * output3 =
             cvCreateImage ( cvGetSize ( input ), 8U, 3 );
 	renderComponentsWithBoxes(SWTImage, components, output3);
@@ -475,7 +449,7 @@ IplImage * textDetection (IplImage * input, bool dark_on_light)
 	
 	renderComponentsWithBoxes (SWTImage, components, output4);
     cvSaveImage ( "words.png",output4);
-    cvReleaseImage ( &output3 );
+    cvReleaseImage ( &output4 );
 
     // Make chains of components
     std::vector<Chain> chains;
@@ -499,11 +473,17 @@ IplImage * textDetection (IplImage * input, bool dark_on_light)
 	cv::RotatedRect headLoc = findHeadlineLocation(SWTImage, components, chains);
 	cv::Mat output8(input);
 	drawRotatedRect(output8, headLoc, cv::Scalar(0,255,0), 4);
+	cv::imwrite("headline.png", output8);
 
     cvReleaseImage ( &gradientX );
     cvReleaseImage ( &gradientY );
     cvReleaseImage ( &SWTImage );
     cvReleaseImage ( &edgeImage );
+
+    cvReleaseImage ( &output5 );
+    cvReleaseImage ( &output6 );
+    cvReleaseImage ( &output7 );
+
     return output6;
 }
 
@@ -695,146 +675,6 @@ void findLegallyCC(cv::Mat SWTImage,
 	std::cout << "Filterd by points: " << num_filterd << "componnets is " << components.size() << endl;
 }
 
-void findLegallyConnectedComponents (IplImage * SWTImage,
-                                std::vector<Ray> & rays,
-								std::vector<std::vector<Point2d> > &components)
-{
-        boost::unordered_map<int, int> map;
-        boost::unordered_map<int, Point2d> revmap;
-
-        typedef boost::adjacency_list<boost::vecS, boost::vecS, boost::undirectedS> Graph;
-        int num_vertices = 0;
-        // Number vertices for graph.  Associate each point with number
-        for( int row = 0; row < SWTImage->height; row++ ){
-            float * ptr = (float*)(SWTImage->imageData + row * SWTImage->widthStep);
-            for (int col = 0; col < SWTImage->width; col++ ){
-                if (*ptr > 0) {
-                    map[row * SWTImage->width + col] = num_vertices;
-                    Point2d p;
-                    p.x = col;
-                    p.y = row;
-                    revmap[num_vertices] = p;
-                    num_vertices++;
-                }
-                ptr++;
-            }
-        }
-
-        Graph g(num_vertices);
-
-        for( int row = 0; row < SWTImage->height; row++ ){
-            float * ptr = (float*)(SWTImage->imageData + row * SWTImage->widthStep);
-            for (int col = 0; col < SWTImage->width; col++ ){
-                if (*ptr > 0) {
-                    // check pixel to the right, right-down, down, left-down
-                    int this_pixel = map[row * SWTImage->width + col];
-                    if (col+1 < SWTImage->width) {
-                        float right = CV_IMAGE_ELEM(SWTImage, float, row, col+1);
-                        if (right > 0 && ((*ptr)/right <= 3.0 || right/(*ptr) <= 3.0))
-                            boost::add_edge(this_pixel, map.at(row * SWTImage->width + col + 1), g);
-                    }
-                    if (row+1 < SWTImage->height) {
-                        if (col+1 < SWTImage->width) {
-                            float right_down = CV_IMAGE_ELEM(SWTImage, float, row+1, col+1);
-                            if (right_down > 0 && ((*ptr)/right_down <= 3.0 || right_down/(*ptr) <= 3.0))
-                                boost::add_edge(this_pixel, map.at((row+1) * SWTImage->width + col + 1), g);
-                        }
-                        float down = CV_IMAGE_ELEM(SWTImage, float, row+1, col);
-                        if (down > 0 && ((*ptr)/down <= 3.0 || down/(*ptr) <= 3.0))
-                            boost::add_edge(this_pixel, map.at((row+1) * SWTImage->width + col), g);
-                        if (col-1 >= 0) {
-                            float left_down = CV_IMAGE_ELEM(SWTImage, float, row+1, col-1);
-                            if (left_down > 0 && ((*ptr)/left_down <= 3.0 || left_down/(*ptr) <= 3.0))
-                                boost::add_edge(this_pixel, map.at((row+1) * SWTImage->width + col - 1), g);
-                        }
-                    }
-                }
-                ptr++;
-            }
-        }
-        std::vector<int> c(num_vertices);
-
-        int num_comp = connected_components(g, &c[0]);
-
-        //std::vector<std::vector<Point2d> > components;
-        components.reserve(num_comp);
-        std::cout << "Before filtering, " << num_comp << " components and " << num_vertices << " vertices" << std::endl;
-        for (int j = 0; j < num_comp; j++) {
-            std::vector<Point2d> tmp;
-            components.push_back( tmp );
-        }
-        for (int j = 0; j < num_vertices; j++) {
-            Point2d p = revmap[j];
-            (components[c[j]]).push_back(p);
-        }
-}
-
-std::vector< std::vector<Point2d> >
-findLegallyConnectedComponentsRAY (IplImage * SWTImage,
-                                std::vector<Ray> & rays)
-{
-        boost::unordered_map<int, int> map;
-        boost::unordered_map<int, Point2d> revmap;
-
-        typedef boost::adjacency_list<boost::vecS, boost::vecS, boost::undirectedS> Graph;
-        int num_vertices = 0;
-        // Number vertices for graph.  Associate each point with number
-        for( int row = 0; row < SWTImage->height; row++ ){
-            float * ptr = (float*)(SWTImage->imageData + row * SWTImage->widthStep);
-            for (int col = 0; col < SWTImage->width; col++ ){
-                if (*ptr > 0) {
-                    map[row * SWTImage->width + col] = num_vertices;
-                    Point2d p;
-                    p.x = col;
-                    p.y = row;
-                    revmap[num_vertices] = p;
-                    num_vertices++;
-                }
-                ptr++;
-            }
-        }
-
-        Graph g(num_vertices);
-
-        // Traverse and add edges to graph
-        for (std::vector<Ray>::const_iterator it = rays.begin(); it != rays.end(); it++) {
-                float lastSW = 0;
-                int lastRow = 0;
-                int lastCol = 0;
-                for (std::vector<Point2d>::const_iterator it2 = it->points.begin(); it2 != it->points.end(); it2++) {
-                        float currentSW = CV_IMAGE_ELEM(SWTImage, float, it2->y, it2->x);
-                        if (lastSW == 0) {}
-                        else if (lastSW/currentSW<=3.0 || currentSW/lastSW<=3.0){
-                                boost::add_edge(map.at(it2->y * SWTImage->width + it2->x), map.at(lastRow * SWTImage->width + lastCol), g);
-                        }
-                        lastSW = currentSW;
-                        lastRow = it2->y;
-                        lastCol = it2->x;
-                }
-                lastSW = 0;
-                lastRow = 0;
-                lastCol = 0;
-        }
-
-        std::vector<int> c(num_vertices);
-
-        int num_comp = connected_components(g, &c[0]);
-
-        std::vector<std::vector<Point2d> > components;
-        components.reserve(num_comp);
-        std::cout << "Before filtering, " << num_comp << " components and " << num_vertices << " vertices" << std::endl;
-        for (int j = 0; j < num_comp; j++) {
-            std::vector<Point2d> tmp;
-            components.push_back( tmp );
-        }
-        for (int j = 0; j < num_vertices; j++) {
-            Point2d p = revmap[j];
-            (components[c[j]]).push_back(p);
-        }
-
-        return components;
-}
-
 void componentStats(IplImage * SWTImage,
                                         const std::vector<Point2d> & component,
                                         float & mean, float & variance, float & median,
@@ -903,7 +743,6 @@ void filterComponents(IplImage * SWTImage,
             float rminy = (float)miny;
             float rmaxy = (float)maxy;
             // compute the rotated bounding box
-			// 为什么不用OpenCV中的rect函数
 
 			std::vector<cv::Point> points(it->size());
 			for (int i = 0; i < it->size(); i++)
@@ -913,64 +752,12 @@ void filterComponents(IplImage * SWTImage,
 			cv::RotatedRect bb = cv::minAreaRect(points);
 			width = bb.size.height;
 			length = bb.size.width;
-/*
-            float increment = 1./36.;
-            for (float theta = increment * PI; theta<PI/2.0; theta += increment * PI) {
-                float xmin,xmax,ymin,ymax,xtemp,ytemp,ltemp,wtemp;
-                    xmin = 1000000;
-                    ymin = 1000000;
-                    xmax = 0;
-                    ymax = 0;
-                for (unsigned int i = 0; i < (*it).size(); i++) {
-                    xtemp = (*it)[i].x * cos(theta) + (*it)[i].y * -sin(theta);
-                    ytemp = (*it)[i].x * sin(theta) + (*it)[i].y * cos(theta);
-                    xmin = std::min(xtemp,xmin);
-                    xmax = std::max(xtemp,xmax);
-                    ymin = std::min(ytemp,ymin);
-                    ymax = std::max(ytemp,ymax);
-                }
-                ltemp = xmax - xmin + 1;
-                wtemp = ymax - ymin + 1;
-                if (ltemp*wtemp < area) {
-                    area = ltemp*wtemp;
-                    length = ltemp;
-                    width = wtemp;
-                }
-            }
-			*/
+
             // check if the aspect ratio is between 1/5 and 5 
             if (length/width < 1./5. || length/width > 5.) {
                 continue;
             }
 
-			/*
-            // compute the diameter TODO finish
-            // compute dense representation of component
-            std::vector <std::vector<float> > denseRepr;
-            denseRepr.reserve(maxx-minx+1);
-            for (int i = 0; i < maxx-minx+1; i++) {
-                std::vector<float> tmp;
-                tmp.reserve(maxy-miny+1);
-                denseRepr.push_back(tmp);
-                for (int j = 0; j < maxy-miny+1; j++) {
-                    denseRepr[i].push_back(0);
-                }
-            }
-            for (std::vector<Point2d>::iterator pit = it->begin(); pit != it->end(); pit++) {
-                (denseRepr[pit->x - minx])[pit->y - miny] = 1;
-            }
-            // create graph representing components
-            const int num_nodes = it->size();
-			*/
-            /*
-            E edges[] = { E(0,2),
-                          E(1,1), E(1,3), E(1,4),
-                          E(2,1), E(2,3),
-                          E(3,4),
-                          E(4,0), E(4,1) };
-
-            Graph G(edges + sizeof(edges) / sizeof(E), weights, num_nodes);
-            */
             Point2dFloat center;
             center.x = ((float)(maxx+minx))/2.0;
             center.y = ((float)(maxy+miny))/2.0;
@@ -1194,7 +981,6 @@ Component mergeTwoComponent(Component &a, Component &b)
 
 void clusterChineseWord( IplImage * colorImage, vector<Component> &components)
 {
-    // make vector of color averages
 	vector<Chain> candidateChains = computeSortedChainCandidate(components);
 
 	while (!candidateChains.empty())
@@ -1206,7 +992,6 @@ void clusterChineseWord( IplImage * colorImage, vector<Component> &components)
 	}
 
 	std::cout << components.size() << " Chinese word" << std::endl;
-    //std::sort(chains.begin(), chains.end(), &chainSortDist);
 }
 
 std::vector<Chain> makeChains(vector<Component> &components) {
