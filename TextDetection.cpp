@@ -400,7 +400,6 @@ IplImage * textDetection (IplImage * input, bool dark_on_light)
     cvSmooth(gradientX, gradientX, 3, 3);
     cvSmooth(gradientY, gradientY, 3, 3);
     cvReleaseImage ( &gaussianImage );
-    cvReleaseImage ( &grayImage );
 
     // Calculate SWT and return ray vectors
     std::vector<Ray> rays;
@@ -470,15 +469,17 @@ IplImage * textDetection (IplImage * input, bool dark_on_light)
 	renderChainsWithBoxes ( SWTImage, components, chains, output7);
     cvSaveImage ( "chainWithBox.png",output7);
 
-	cv::RotatedRect headLoc = findHeadlineLocation(SWTImage, components, chains);
+    cv::RotatedRect headLoc = findHeadlineLocation(SWTImage, components, chains);
 	cv::Mat output8(input);
 	drawRotatedRect(output8, headLoc, cv::Scalar(0,255,0), 4);
+	cv::cvtColor(output8, output8, CV_BGR2RGB);
 	cv::imwrite("headline.png", output8);
 
     cvReleaseImage ( &gradientX );
     cvReleaseImage ( &gradientY );
     cvReleaseImage ( &SWTImage );
     cvReleaseImage ( &edgeImage );
+    cvReleaseImage ( &grayImage );
 
     cvReleaseImage ( &output5 );
     cvReleaseImage ( &output6 );
@@ -655,24 +656,12 @@ void findLegallyCC(cv::Mat SWTImage,
 			}	
 		}
 	}
-	int num_comp = components.size();
 	int num_vertices=0;
-	int num_filterd = 0;
-	for (auto vecIt = components.begin(); vecIt != components.end(); )
+	for (auto vecIt = components.begin(); vecIt != components.end(); vecIt++)
 	{
 		num_vertices+=vecIt->size();
-
-		if (vecIt->size() < 10)
-		{
-			vecIt = components.erase(vecIt);
-		}
-		else{
-			vecIt++;
-			num_filterd += vecIt->size();
-		}
 	}
-	std::cout << "Our implementation Before filtering, " << num_comp << " components and " << num_vertices << " vertices" << std::endl;
-	std::cout << "Filterd by points: " << num_filterd << "componnets is " << components.size() << endl;
+	std::cout << "Our implementation Before filtering, " << components.size()<< " components and " << num_vertices << " vertices" << std::endl;
 }
 
 void componentStats(IplImage * SWTImage,
@@ -720,7 +709,13 @@ void filterComponents(IplImage * SWTImage,
         compDimensions.reserve(components.size());
         // bounding boxes
         compBB.reserve(components.size());
-        for (std::vector<std::vector<Point2d> >::iterator it = components.begin(); it != components.end();it++) {
+        for (std::vector<std::vector<Point2d> >::iterator it = components.begin(); it != components.end();it++) 
+		{
+			if (it->size() < 10)
+			{
+				continue;
+			}
+
             // compute the stroke width mean, variance, median
             float mean, variance, median;
             int minx, miny, maxx, maxy;
